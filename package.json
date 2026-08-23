@@ -1,0 +1,28 @@
+{
+  "name": "@brandbastion-mktg/platform-auth",
+  "version": "1.1.0",
+  "description": "Verify a sign-in handoff token and hold an application's own session. No dependencies, Node standard library only.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./platform-auth.mjs",
+  "types": "./platform-auth.d.mts",
+  "exports": {
+    ".": {
+      "types": "./platform-auth.d.mts",
+      "import": "./platform-auth.mjs"
+    }
+  },
+  "files": [
+    "platform-auth.mjs",
+    "platform-auth.d.mts",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brandbastion-mktg/platform-auth.git"
+  }
+}
