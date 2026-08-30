@@ -14,7 +14,7 @@ It is not published to a registry. Depend on a tagged version by URL:
 ```json
 {
   "dependencies": {
-    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v1.1.0.tar.gz"
+    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v1.2.0.tar.gz"
   }
 }
 ```
@@ -39,6 +39,27 @@ app.get('/auth/handoff', auth.handoff);  // consumes the token, then redirects t
 app.post('/auth/signout', auth.signOut);
 app.use(auth.required);                  // everything below this line needs a session
 ```
+
+### Pages inside the application (1.2.0)
+
+The platform can say which of an application's pages a person may open. The ids
+are the application's own words for its screens; the platform stores them, ships
+them, and never interprets one.
+
+```js
+app.get('/settings', (req, res, next) => (auth.mayOpen(req, 'settings')
+  ? next()
+  : res.redirect('/')));            // refuse on the route, never only in the menu
+```
+
+Two rules that are not optional:
+
+- **Hiding a link is not a gate.** Leave the tab out of the navigation *and*
+  refuse on the route, because anyone can type an address.
+- **`null` means every page.** A session minted before 1.2.0 carries no list, and
+  `allows`/`mayOpen` read that as everything. Never test `req.user.pages`
+  directly: `[]` is a real answer meaning no pages at all, and the two look alike
+  to a careless check.
 
 Public routes go **above** `auth.required`: the application decides what is
 public and the module never hears about it.
@@ -68,6 +89,8 @@ Allowed:
 2. Creating, reading and clearing **this application's own** session cookie.
 3. Deciding whether the current request is signed in, and sending it to the
    platform when it is not.
+4. **Carrying the opaque set of page permissions the platform issued alongside
+   the identity, and answering whether a given id is in it.** Added in 1.2.0.
 
 Never allowed:
 
@@ -76,7 +99,30 @@ Never allowed:
 - Any knowledge of what an application does with a person once it knows who they
   are. A per-user quota is the worked example: it means nothing to the other
   applications and it stays in the one that has it.
+- **Deciding which pages exist, what any page id means, or which routes need
+  which permission.** That is the application's, always.
 - Any network call.
+
+### Why item 4 was added, since this list was written not to grow
+
+**Decided 2026-08-30, deliberately and on the record.** The platform gained a
+second level of access: it can now say not only which application somebody may
+open but which of its pages. The module had to carry that or the design would
+have had to break a bigger rule than this one.
+
+The alternative was an application asking the platform "which pages may this
+person see" on each request, which is the live dependency this whole design
+exists to avoid, and a far worse trade for a navigation tab than it already was
+for a login. So the answer rides in the token that already carries the identity,
+and this module carries it the same way it carries an email address: **it moves
+the value and never reads it.** The one function it gained, `allows`, is a set
+membership test plus the null-means-everything rule, and that rule is here rather
+than in each application precisely because getting it backwards locks a whole
+team out of a whole tool on the deploy that introduces it.
+
+The test of whether this was accretion: the module still does not know what a
+page is. It cannot name one, cannot list them, and cannot say which route needs
+which. If a later version can do any of those, the list has genuinely been broken.
 
 ## Why it never calls the platform
 

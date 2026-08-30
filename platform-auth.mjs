@@ -15,7 +15,30 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const CLIENT_VERSION = '1.1.0';
+export const CLIENT_VERSION = '1.2.0';
+
+// --- page permissions (1.2.0) -------------------------------------------------
+//
+// The platform can now say not only WHICH application somebody may open but
+// which of its pages, and the answer rides in the handoff token and then in this
+// application's own session. See the README's closed list: this module CARRIES
+// those permissions and never interprets one. It does not know what a page is,
+// which routes need which, or what any of the ids mean. The application owns all
+// of that, because the application is the only thing that can.
+//
+// NULL MEANS EVERY PAGE, AND THAT IS THE WHOLE COMPATIBILITY STORY. A token or a
+// session minted before 1.2.0 carries no page list at all, and the only safe
+// reading of "no answer" is the behaviour of the day before this shipped:
+// everything the person's application grant already allowed. An EMPTY ARRAY is a
+// different statement - a person whose every page has been closed - and the two
+// must never collapse into each other. Getting this backwards locks a whole team
+// out of a whole tool on the deploy that introduces it, which is why the rule is
+// in one exported function rather than re-implemented in each application.
+export function allows(pages, pageId) {
+  if (pages === null || pages === undefined) return true;
+  if (!Array.isArray(pages)) return true;
+  return pages.includes(String(pageId));
+}
 
 const SESSION_HOURS = 12;
 const b64 = (v) => Buffer.from(v).toString('base64url');
@@ -69,12 +92,16 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
   // Self-contained and signed, NOT looked up: the client never calls the
   // platform at runtime (see README). Revocation therefore lands when this
   // expires, which is the accepted trade.
-  function issue({ userId, email, now = Date.now() }) {
-    const body = b64(JSON.stringify({
+  function issue({ userId, email, pages = null, now = Date.now() }) {
+    const claims = {
       u: String(userId), e: String(email || ''), a: appId,
       exp: Math.floor(now / 1000) + sessionHours * 3600,
       n: randomBytes(6).toString('base64url'),
-    }));
+    };
+    // Omitted rather than sent as null when there is nothing to say, so an
+    // absent list stays absent through the whole round trip. See `allows`.
+    if (Array.isArray(pages)) claims.p = pages.map(String);
+    const body = b64(JSON.stringify(claims));
     return `${body}.${sign(body)}`;
   }
 
@@ -88,7 +115,14 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
       // even though the secret is shared.
       if (claims.a !== appId) return null;
       if (!claims.exp || claims.exp * 1000 <= now) return null;
-      return { id: claims.u, email: claims.e };
+      // `pages` is signed along with everything else, so an application can trust
+      // it exactly as far as it trusts the identity beside it. null means every
+      // page; see `allows`, which is the only correct way to ask.
+      return {
+        id: claims.u,
+        email: claims.e,
+        pages: Array.isArray(claims.p) ? claims.p.map(String) : null,
+      };
     } catch {
       return null;
     }
@@ -144,7 +178,15 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
         + `<a href="${again}">Open this tool from the platform again.</a></p>`,
       );
     }
-    res.cookie(cookieName, issue({ userId: claims.userId, email: claims.email }), {
+    // The page list travels straight from the token into this application's own
+    // session, unread. THIS IS THE ONLY MOMENT THE APPLICATION LEARNS IT: there
+    // is no call back to the platform, so a permission changed after this point
+    // lands when the session next renews, up to its twelve-hour life. That is the
+    // same revocation lag already accepted for the application grant itself,
+    // now true of a smaller and more casual action.
+    res.cookie(cookieName, issue({
+      userId: claims.userId, email: claims.email, pages: claims.pages,
+    }), {
       ...cookieOptions(req), maxAge: sessionHours * 3600 * 1000,
     });
     res.setHeader('Cache-Control', 'no-store');
@@ -156,7 +198,15 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
     res.redirect(`${platformUrl.replace(/\/+$/, '')}/login`);
   }
 
-  return { attach, required, handoff, signOut, issue, read, appId, version: CLIENT_VERSION };
+  // `mayOpen` is `allows` bound to the current request, and it is the only piece
+  // of 1.2.0 on this object. It answers "is this page in the set the platform
+  // issued", nothing more: it does not know which routes need which page, and
+  // never will - see the closed list.
+  const mayOpen = (req, pageId) => allows(req?.user?.pages, pageId);
+
+  return {
+    attach, required, handoff, signOut, issue, read, mayOpen, appId, version: CLIENT_VERSION,
+  };
 }
 
 // Verify a handoff token minted by the platform. Kept as a standalone export so
@@ -175,7 +225,14 @@ export function verifyHandoff(token, expectedApp, secret, { now = Date.now() } =
     const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (claims.a !== String(expectedApp)) return null;
     if (!claims.exp || claims.exp * 1000 <= now) return null;
-    return { userId: claims.u, email: claims.e, appId: claims.a };
+    return {
+      userId: claims.u,
+      email: claims.e,
+      appId: claims.a,
+      // null when the token says nothing about pages, which means every page.
+      // An empty array is the different, real answer of "no pages at all".
+      pages: Array.isArray(claims.p) ? claims.p.map(String) : null,
+    };
   } catch {
     return null;
   }
