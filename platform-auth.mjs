@@ -15,7 +15,7 @@
 
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 
-export const CLIENT_VERSION = '1.2.0';
+export const CLIENT_VERSION = '1.3.0';
 
 // --- page permissions (1.2.0) -------------------------------------------------
 //
@@ -38,6 +38,30 @@ export function allows(pages, pageId) {
   if (pages === null || pages === undefined) return true;
   if (!Array.isArray(pages)) return true;
   return pages.includes(String(pageId));
+}
+
+// --- the other tools a person holds (1.3.0) ------------------------------------
+//
+// The platform can also say WHICH OTHER APPLICATIONS this person may open, so
+// that an application's tool menu can leave out the ones they cannot. Without
+// this every application's menu was a fixed list of the whole fleet, and a
+// colleague without a tool still saw its name in every sibling's menu
+// (2026-09-03). The application could not filter even if it wanted to: nothing
+// told it. The Hub already hides what a person cannot open, on the launcher and
+// in its own header; this is the same rule carried into the tools.
+//
+// SAME SHAPE, SAME RULE AS PAGES, AND FOR THE SAME REASON. The list rides in the
+// handoff token and then in this application's own session, unread by this
+// module: it does not know what a tool is, which tools exist, or what any id
+// means. NULL MEANS EVERY TOOL - a token or session from before 1.3.0 says
+// nothing, and the only safe reading of nothing is the menu as it was the day
+// before, which is the whole fleet. An EMPTY ARRAY is the real answer "no other
+// tool at all", and the two never collapse. This is a menu, not a gate: the
+// platform's own door refuses anyone without the grant whatever a menu shows.
+export function holds(apps, appId) {
+  if (apps === null || apps === undefined) return true;
+  if (!Array.isArray(apps)) return true;
+  return apps.includes(String(appId));
 }
 
 const SESSION_HOURS = 12;
@@ -92,7 +116,7 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
   // Self-contained and signed, NOT looked up: the client never calls the
   // platform at runtime (see README). Revocation therefore lands when this
   // expires, which is the accepted trade.
-  function issue({ userId, email, pages = null, now = Date.now() }) {
+  function issue({ userId, email, pages = null, apps = null, now = Date.now() }) {
     const claims = {
       u: String(userId), e: String(email || ''), a: appId,
       exp: Math.floor(now / 1000) + sessionHours * 3600,
@@ -101,6 +125,8 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
     // Omitted rather than sent as null when there is nothing to say, so an
     // absent list stays absent through the whole round trip. See `allows`.
     if (Array.isArray(pages)) claims.p = pages.map(String);
+    // The tools this person holds, same treatment (1.3.0). See `holds`.
+    if (Array.isArray(apps)) claims.t = apps.map(String);
     const body = b64(JSON.stringify(claims));
     return `${body}.${sign(body)}`;
   }
@@ -122,6 +148,9 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
         id: claims.u,
         email: claims.e,
         pages: Array.isArray(claims.p) ? claims.p.map(String) : null,
+        // The tools this person holds, or null meaning every tool (1.3.0).
+        // `holds` is the only correct way to ask.
+        apps: Array.isArray(claims.t) ? claims.t.map(String) : null,
       };
     } catch {
       return null;
@@ -184,8 +213,10 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
     // lands when the session next renews, up to its twelve-hour life. That is the
     // same revocation lag already accepted for the application grant itself,
     // now true of a smaller and more casual action.
+    // The tool list rides the same way (1.3.0): read once here, held for the
+    // session, never asked for again.
     res.cookie(cookieName, issue({
-      userId: claims.userId, email: claims.email, pages: claims.pages,
+      userId: claims.userId, email: claims.email, pages: claims.pages, apps: claims.apps,
     }), {
       ...cookieOptions(req), maxAge: sessionHours * 3600 * 1000,
     });
@@ -232,6 +263,8 @@ export function verifyHandoff(token, expectedApp, secret, { now = Date.now() } =
       // null when the token says nothing about pages, which means every page.
       // An empty array is the different, real answer of "no pages at all".
       pages: Array.isArray(claims.p) ? claims.p.map(String) : null,
+      // Likewise for the tools this person holds (1.3.0): null means every tool.
+      apps: Array.isArray(claims.t) ? claims.t.map(String) : null,
     };
   } catch {
     return null;

@@ -15,21 +15,36 @@ export const CLIENT_VERSION: string;
  */
 export type PagePermissions = string[] | null;
 
+/**
+ * The ids of the OTHER applications a person may open, so a tool menu can leave
+ * out the ones they cannot (1.3.0).
+ *
+ * `null` means EVERY tool, and is what a token or session minted before 1.3.0
+ * carries. `[]` is the different, real answer of "no other tool at all". Never
+ * test these by hand: use `holds`, which is the one place that rule lives.
+ */
+export type ToolPermissions = string[] | null;
+
 export interface HandoffClaims {
   userId: string;
   email: string;
   appId: string;
   pages: PagePermissions;
+  apps: ToolPermissions;
 }
 
 export interface SessionUser {
   id: string;
   email: string;
   pages: PagePermissions;
+  apps: ToolPermissions;
 }
 
 /** Is `pageId` in the set the platform issued? `null` permissions allow everything. */
 export function allows(pages: PagePermissions | undefined, pageId: string): boolean;
+
+/** Does this person hold the application `appId`? `null` permissions mean every tool. */
+export function holds(apps: ToolPermissions | undefined, appId: string): boolean;
 
 /** Verify a handoff token minted by the platform. `expectedApp` is required. */
 export function verifyHandoff(
@@ -42,7 +57,7 @@ export function verifyHandoff(
 export interface PlatformAuth {
   /** Mint this applet's own session value. */
   issue(input: {
-    userId: string; email: string; pages?: PagePermissions; now?: number;
+    userId: string; email: string; pages?: PagePermissions; apps?: ToolPermissions; now?: number;
   }): string;
   /** Read this applet's own session value, or null. */
   read(value: string | null | undefined, opts?: { now?: number }): SessionUser | null;

@@ -14,7 +14,7 @@ It is not published to a registry. Depend on a tagged version by URL:
 ```json
 {
   "dependencies": {
-    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v1.2.0.tar.gz"
+    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v1.3.0.tar.gz"
   }
 }
 ```
@@ -91,6 +91,9 @@ Allowed:
    platform when it is not.
 4. **Carrying the opaque set of page permissions the platform issued alongside
    the identity, and answering whether a given id is in it.** Added in 1.2.0.
+5. **Carrying the opaque list of the other applications this person may open,
+   and answering whether a given id is in it.** Added in 1.3.0, for the tool
+   menu only; see below.
 
 Never allowed:
 
@@ -123,6 +126,38 @@ team out of a whole tool on the deploy that introduces it.
 The test of whether this was accretion: the module still does not know what a
 page is. It cannot name one, cannot list them, and cannot say which route needs
 which. If a later version can do any of those, the list has genuinely been broken.
+
+### Why item 5 was added (1.3.0)
+
+**Decided 2026-09-03, deliberately and on the record.** Every application carries
+the fleet's tool menu, and every copy was a fixed list of the whole fleet, so a
+colleague without a tool still saw its name and one-line description in every
+sibling's menu. The platform already hides what a person cannot open, on its
+launcher and in its own header; the applications could not follow that rule
+because nothing told them which tools a person holds.
+
+The answer is the same answer as pages, for the same reason: the list rides in
+the handoff token beside the identity and the page list, this module **moves it
+and never reads it**, and `holds` is the one place the null-means-everything
+rule lives. It is a menu, not a gate: the platform's own door refuses anyone
+without the grant whatever a menu shows, so an application that ignores the list
+is only less tidy, never less safe.
+
+The test of whether this was accretion: the module still cannot name a tool,
+list the fleet, or say where any tool lives. Those stay in each application (and
+one day in the platform serving the list), never here.
+
+### Tool menus (1.3.0)
+
+```js
+import { holds } from '@brandbastion-mktg/platform-auth';
+
+const menu = FLEET.filter((tool) => holds(req.user.apps, tool.id));   // leave out what they cannot open
+```
+
+The ids are the platform's own application ids. As with pages, **never test
+`req.user.apps` directly**: `null` means every tool (a session from before 1.3.0)
+and `[]` means no other tool at all.
 
 ## Why it never calls the platform
 
