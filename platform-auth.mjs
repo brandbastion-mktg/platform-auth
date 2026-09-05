@@ -13,9 +13,9 @@
 // Node standard library only, so an application can adopt it without taking on
 // a single dependency of its own.
 
-import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHmac, createPublicKey, randomBytes, timingSafeEqual, verify as verifySignature } from 'node:crypto';
 
-export const CLIENT_VERSION = '1.3.0';
+export const CLIENT_VERSION = '2.0.0';
 
 // --- page permissions (1.2.0) -------------------------------------------------
 //
@@ -64,6 +64,37 @@ export function holds(apps, appId) {
   return apps.includes(String(appId));
 }
 
+// --- the platform's public key (2.0.0) ------------------------------------------
+//
+// WHY THE HANDOFF IS NO LONGER A SHARED SECRET. Until 2.0.0 the platform signed
+// a handoff token with HMAC under a secret that every application also held, so
+// that each could verify it. The trouble is what "held" means: whoever holds an
+// HMAC secret can also SIGN with it, so a leak from any one application (a
+// public-facing one, say) let the holder mint a valid entry into every other
+// application as any person. That is the single most valuable forgery in this
+// design, and sharing the secret handed the means to every deployment.
+//
+// Now the platform signs with a PRIVATE key (Ed25519) that only it holds, and
+// every application verifies with the matching PUBLIC key, which can check a
+// signature but never produce one. An application's own session secret is its
+// own again: it signs that application's cookies and nothing else, so a leak
+// forges sessions in that one application, which the leaked deployment could
+// do anyway, and nowhere else.
+//
+// The public key is 32 bytes and travels as base64url (Node's own JWK `x`), or
+// as a PEM if somebody prefers. It is not secret; it is configuration.
+const SPKI_ED25519_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
+
+export function publicKeyFromRaw(raw) {
+  if (!raw) throw new Error('platformAuth: publicKey is empty.');
+  if (typeof raw === 'object' && raw !== null && typeof raw.export === 'function') return raw; // already a KeyObject
+  const text = String(raw).trim();
+  if (text.startsWith('-----BEGIN')) return createPublicKey({ key: text, format: 'pem' });
+  const bytes = Buffer.from(text, 'base64url');
+  if (bytes.length !== 32) throw new Error(`platformAuth: publicKey must be 32 raw bytes (base64url), got ${bytes.length}.`);
+  return createPublicKey({ key: Buffer.concat([SPKI_ED25519_PREFIX, bytes]), format: 'der', type: 'spki' });
+}
+
 const SESSION_HOURS = 12;
 const b64 = (v) => Buffer.from(v).toString('base64url');
 
@@ -99,7 +130,7 @@ function readCookie(req, name) {
   return null;
 }
 
-export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHours = SESSION_HOURS } = {}) {
+export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName, sessionHours = SESSION_HOURS } = {}) {
   need(appId, 'appId');
   need(cookieName, 'cookieName');
   need(platformUrl, 'platformUrl');
@@ -109,13 +140,19 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
     // everything looks like it is working.
     throw new Error('platformAuth: secret is missing or too short (needs 32+ chars).');
   }
+  // Parsed once, here, so a malformed key fails the application at boot rather
+  // than refusing every arrival with a message nobody reads. Optional: an
+  // application without one accepts only the shared-secret handoff (pre-2.0.0),
+  // which is how a fleet changes over one application at a time.
+  const platformKey = publicKey ? publicKeyFromRaw(publicKey) : null;
 
   const sign = (value) => createHmac('sha256', String(secret)).update(value).digest('base64url');
 
   // --- this applet's own session -------------------------------------------
   // Self-contained and signed, NOT looked up: the client never calls the
   // platform at runtime (see README). Revocation therefore lands when this
-  // expires, which is the accepted trade.
+  // expires, which is the accepted trade. Signed with THIS application's
+  // secret and nothing else's (2.0.0).
   function issue({ userId, email, pages = null, apps = null, now = Date.now() }) {
     const claims = {
       u: String(userId), e: String(email || ''), a: appId,
@@ -138,7 +175,7 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
       if (!body || !sig || !same(sign(body), sig)) return null;
       const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
       // Bound to THIS applet: a session minted for another one is not valid here
-      // even though the secret is shared.
+      // even if two applications ever shared a secret.
       if (claims.a !== appId) return null;
       if (!claims.exp || claims.exp * 1000 <= now) return null;
       // `pages` is signed along with everything else, so an application can trust
@@ -194,7 +231,11 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
   // would undo most of what the sixty-second lifetime is for.
   function handoff(req, res) {
     const token = String(req.query?.token || '');
-    const claims = verifyHandoff(token, appId, secret);
+    // A key-signed token (2.0.0) verifies against the platform's public key; a
+    // shared-secret token (pre-2.0.0) against this application's secret, which
+    // only still works while that secret is the one the platform signs with.
+    // Once this application's secret is its own, only the key can open it.
+    const claims = verifyHandoff(token, appId, { publicKey: platformKey, secret });
     if (!claims) {
       // A refusal with a door, not a dead end (1.1.0): the token has a
       // sixty-second life, so anyone who hits this has nothing to act on but
@@ -246,13 +287,32 @@ export function platformAuth({ appId, secret, platformUrl, cookieName, sessionHo
 // `expectedApp` is a REQUIRED argument rather than an option, deliberately: a
 // token minted for one applet opening another is the most valuable forgery
 // available here, and this is the shape that stops it being omitted silently.
-export function verifyHandoff(token, expectedApp, secret, { now = Date.now() } = {}) {
+//
+// `keys` is either the shared secret as a string (pre-2.0.0 callers; still
+// accepted) or `{ publicKey, secret }` (2.0.0): a token that starts with `v2.`
+// is checked against the platform's public key and nothing else; any other
+// token is checked against the secret and nothing else. Neither path ever
+// falls back to the other, so a token can never be accepted by a check it was
+// not made for.
+export function verifyHandoff(token, expectedApp, keys, { now = Date.now() } = {}) {
   try {
-    if (!token || !expectedApp || !secret) return null;
-    const [body, signature] = String(token).split('.');
-    if (!body || !signature) return null;
-    const expected = createHmac('sha256', String(secret)).update(body).digest('base64url');
-    if (!same(expected, signature)) return null;
+    if (!token || !expectedApp || !keys) return null;
+    const { publicKey = null, secret = null } = typeof keys === 'string' ? { secret: keys } : keys;
+    const parts = String(token).split('.');
+    let body;
+    if (parts[0] === 'v2') {
+      if (parts.length !== 3 || !publicKey) return null;
+      const [, b, signature] = parts;
+      const ok = verifySignature(null, Buffer.from(`v2.${b}`), publicKeyFromRaw(publicKey), Buffer.from(signature, 'base64url'));
+      if (!ok) return null;
+      body = b;
+    } else {
+      if (parts.length !== 2 || !secret) return null;
+      const [b, signature] = parts;
+      const expected = createHmac('sha256', String(secret)).update(b).digest('base64url');
+      if (!same(expected, signature)) return null;
+      body = b;
+    }
     const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
     if (claims.a !== String(expectedApp)) return null;
     if (!claims.exp || claims.exp * 1000 <= now) return null;

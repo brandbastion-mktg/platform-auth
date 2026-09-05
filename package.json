@@ -1,6 +1,6 @@
 {
   "name": "@brandbastion-mktg/platform-auth",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "Verify a sign-in handoff token and hold an application's own session. No dependencies, Node standard library only.",
   "license": "MIT",
   "type": "module",

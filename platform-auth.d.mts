@@ -4,6 +4,8 @@
 // language; this declaration is for the TypeScript ones. Only the
 // framework-agnostic core is declared, which is all an application needs when
 // it serves with node:http and does its own cookie and redirect glue.
+import type { KeyObject } from 'node:crypto';
+
 export const CLIENT_VERSION: string;
 
 /**
@@ -46,11 +48,24 @@ export function allows(pages: PagePermissions | undefined, pageId: string): bool
 /** Does this person hold the application `appId`? `null` permissions mean every tool. */
 export function holds(apps: ToolPermissions | undefined, appId: string): boolean;
 
+/**
+ * The platform's public key (2.0.0): 32 raw bytes as base64url, or a PEM, or an
+ * existing KeyObject. Not secret; configuration.
+ */
+export function publicKeyFromRaw(raw: string | KeyObject): KeyObject;
+
+/**
+ * What a handoff token is checked against (2.0.0). A `v2.` token is checked
+ * against `publicKey` and nothing else; any other token against `secret` and
+ * nothing else. A plain string is the pre-2.0.0 form and means `secret`.
+ */
+export type HandoffKeys = string | { publicKey?: string | KeyObject | null; secret?: string | null };
+
 /** Verify a handoff token minted by the platform. `expectedApp` is required. */
 export function verifyHandoff(
   token: string | null | undefined,
   expectedApp: string,
-  secret: string,
+  keys: HandoffKeys,
   opts?: { now?: number },
 ): HandoffClaims | null;
 
@@ -73,7 +88,10 @@ export interface PlatformAuth {
 
 export function platformAuth(config: {
   appId: string;
+  /** THIS application's own session secret (32+ chars). */
   secret: string | undefined;
+  /** The platform's public key (2.0.0). Without it only shared-secret handoffs are accepted. */
+  publicKey?: string | KeyObject | null;
   platformUrl: string;
   cookieName: string;
   sessionHours?: number;

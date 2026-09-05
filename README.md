@@ -14,7 +14,7 @@ It is not published to a registry. Depend on a tagged version by URL:
 ```json
 {
   "dependencies": {
-    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v1.3.0.tar.gz"
+    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v2.0.0.tar.gz"
   }
 }
 ```
@@ -159,6 +159,41 @@ The ids are the platform's own application ids. As with pages, **never test
 `req.user.apps` directly**: `null` means every tool (a session from before 1.3.0)
 and `[]` means no other tool at all.
 
+### Why 2.0.0 signs with a key instead of a shared secret
+
+**Decided 2026-09-05, deliberately and on the record.** Until 2.0.0 the platform
+signed a handoff token with HMAC under a secret every application also held, so
+each could verify it. Whoever holds an HMAC secret can also sign with it, so a
+leak from any one application let its holder mint a valid entry into every
+other application as any person: the most valuable forgery in this design,
+handed to every deployment. Item 1 of the closed list is unchanged (verifying a
+handoff is still the whole job); only the arithmetic behind it changed.
+
+Now the platform signs with a private Ed25519 key that only it holds, and every
+application verifies with the matching public key, which can check a signature
+and never produce one. Each application's `secret` is its own again: it signs
+that application's session cookies and nothing else.
+
+```js
+const auth = platformAuth({
+  appId: 'content',
+  secret: process.env.PLATFORM_SECRET,        // THIS application's own session secret
+  publicKey: process.env.PLATFORM_PUBLIC_KEY,  // the platform's public key, 32 bytes base64url
+  platformUrl: process.env.PLATFORM_URL,
+  cookieName: 'ccc_session',
+});
+```
+
+**Changing over without locking anyone out.** A `v2.` token is checked against
+the public key and nothing else; an older token against `secret` and nothing
+else; neither falls back to the other. So an application on 2.0.0 with the
+public key configured accepts both, the platform can keep minting the old form
+until every application has the key, and then switch. After the switch each
+application changes its `secret` to a value nobody else holds; from that moment
+the old form cannot open it (the platform does not know the new secret), and the
+only door is the key. Everyone in that application signs in once more that day,
+and that is the whole visible cost.
+
 ## Why it never calls the platform
 
 An application that asked the platform "is this person still allowed in?" on
@@ -176,15 +211,19 @@ should say so out loud rather than quietly adding a call back.
 - The handoff token is **signed, not encrypted.** Anyone holding one can read the
   user id and email inside it. That is accepted for internal tools over https
   with a sixty-second token life.
+- The platform signs handoff tokens with a **private key only it holds** (2.0.0);
+  applications hold the public key, which verifies and cannot sign. An
+  application's session secret is its own and signs nothing but its own cookies.
 - A session is **bound to the application it was minted for**, so a session or a
-  handoff for one application cannot open another even though the secret is
-  shared. That check is what makes sharing the secret safe.
-- `verifyHandoff(token, expectedApp, secret)` takes the expected application as a
+  handoff for one application cannot open another. That check stays even though
+  no secret is shared any more: it is what makes a misconfiguration harmless.
+- `verifyHandoff(token, expectedApp, keys)` takes the expected application as a
   **required argument** rather than an option, deliberately: a token minted for
   one application opening another is the most valuable forgery available here,
   and this shape is what stops the check being omitted silently.
-- Nothing secret lives in this repository. The security is in the secret, which
-  is held by each deployment and never appears here.
+- Nothing secret lives in this repository. The security is in the platform's
+  private key and each application's own secret, held by each deployment and
+  never appearing here. The public key is configuration, not a secret.
 
 ## Versioning
 
