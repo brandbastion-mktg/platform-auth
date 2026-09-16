@@ -30,6 +30,12 @@ export type ToolPermissions = string[] | null;
 export interface HandoffClaims {
   userId: string;
   email: string;
+  /**
+   * What the platform calls this person (2.1.0), exactly as stored: '' when the
+   * platform holds no name or the token predates names. Display only; anything
+   * an application records is keyed by `userId`.
+   */
+  name: string;
   appId: string;
   pages: PagePermissions;
   apps: ToolPermissions;
@@ -38,6 +44,8 @@ export interface HandoffClaims {
 export interface SessionUser {
   id: string;
   email: string;
+  /** As in HandoffClaims (2.1.0): the stored name or '', never derived from the address. */
+  name: string;
   pages: PagePermissions;
   apps: ToolPermissions;
 }
@@ -72,7 +80,7 @@ export function verifyHandoff(
 export interface PlatformAuth {
   /** Mint this applet's own session value. */
   issue(input: {
-    userId: string; email: string; pages?: PagePermissions; apps?: ToolPermissions; now?: number;
+    userId: string; email: string; name?: string; pages?: PagePermissions; apps?: ToolPermissions; now?: number;
   }): string;
   /** Read this applet's own session value, or null. */
   read(value: string | null | undefined, opts?: { now?: number }): SessionUser | null;
@@ -95,4 +103,11 @@ export function platformAuth(config: {
   platformUrl: string;
   cookieName: string;
   sessionHours?: number;
+  /**
+   * Called once per arrival, after the token is verified and before the session
+   * cookie is set (2.1.0): the one moment an application may record who arrived
+   * in its own people list, keyed by `id`. A thrown error is logged and never
+   * stops the sign-in.
+   */
+  onSignIn?: (person: SessionUser) => void | Promise<void>;
 }): PlatformAuth;

@@ -14,7 +14,7 @@ It is not published to a registry. Depend on a tagged version by URL:
 ```json
 {
   "dependencies": {
-    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v2.0.0.tar.gz"
+    "@brandbastion-mktg/platform-auth": "https://github.com/brandbastion-mktg/platform-auth/archive/refs/tags/v2.1.0.tar.gz"
   }
 }
 ```
@@ -33,6 +33,7 @@ const auth = platformAuth({
   secret: process.env.PLATFORM_SECRET,         // the platform's signing secret
   platformUrl: process.env.PLATFORM_URL,       // where an unauthenticated visitor is sent
   cookieName: 'reports_session',               // THIS application's own cookie name
+  onSignIn: (person) => people.remember(person),   // optional (2.1.0): keep your own people list current
 });
 
 app.get('/auth/handoff', auth.handoff);  // consumes the token, then redirects to a clean URL
@@ -94,6 +95,10 @@ Allowed:
 5. **Carrying the opaque list of the other applications this person may open,
    and answering whether a given id is in it.** Added in 1.3.0, for the tool
    menu only; see below.
+6. **Carrying the person's name as the platform stores it, beside the email,
+   and handing the arriving person to one application-supplied `onSignIn`
+   callback.** Added in 2.1.0. The module moves the name and never shapes it,
+   and it never sees what the callback does with the person; see below.
 
 Never allowed:
 
@@ -147,6 +152,26 @@ The test of whether this was accretion: the module still cannot name a tool,
 list the fleet, or say where any tool lives. Those stay in each application (and
 one day in the platform serving the list), never here.
 
+### Why item 6 was added (2.1.0)
+
+**Decided 2026-09-16, deliberately and on the record.** An audit of all five
+applications found that not one could show a person's real name: the token
+carried an id and an address, so every application manufactured a name from the
+front of the address, each in its own way, and one of them fetched the real name
+separately for a single screen. The same person read differently on every tool
+and on two screens of one tool. Every application also discarded the id and
+keyed its records on the address, the one field that changes.
+
+The name rides in the token beside the email, moved and never read, which is the
+same treatment the email has always had. `onSignIn` exists because the fix on
+the application side is a people list keyed by the id, and the only moment an
+application can fill it from the platform's own answer is the arrival. The
+callback is the application's; the module calls it and learns nothing.
+
+The test of whether this was accretion: the module still cannot store a person,
+look one up, or decide how a name is shown. It moves one more field and makes
+one call it does not understand.
+
 ### Tool menus (1.3.0)
 
 ```js
@@ -158,6 +183,32 @@ const menu = FLEET.filter((tool) => holds(req.user.apps, tool.id));   // leave o
 The ids are the platform's own application ids. As with pages, **never test
 `req.user.apps` directly**: `null` means every tool (a session from before 1.3.0)
 and `[]` means no other tool at all.
+
+### The person's name, and your own people list (2.1.0)
+
+The handoff carries what the platform calls the person, beside the email:
+`req.user.name`, exactly as the platform stores it, `''` when it holds no name.
+Show that; never make a name out of the front of the address.
+
+The stable key for anything the application records about a person is
+`req.user.id`. The name and the email are what it SHOWS, and both can change.
+An application that stamps records with a person keeps a small people list of
+its own, keyed by the id, and fills it at the one moment the platform hands the
+person over:
+
+```js
+const auth = platformAuth({
+  // ...
+  onSignIn: ({ id, email, name }) => people.upsert({ id, email, name, seenAt: Date.now() }),
+});
+```
+
+That list is the application's, in the application's own storage; the module
+never sees it. A thrown error in `onSignIn` is logged and never stops the
+sign-in. Applications that verify the token themselves call the same thing
+after `verifyHandoff` returns. The full contract, which fields the platform
+holds, which channel carries each, and how a new one is added, is
+`IDENTITY-CONTRACT.md` in `brandbastion-mktg/bb-platform`.
 
 ### Why 2.0.0 signs with a key instead of a shared secret
 
@@ -209,8 +260,8 @@ should say so out loud rather than quietly adding a call back.
 ## Security notes
 
 - The handoff token is **signed, not encrypted.** Anyone holding one can read the
-  user id and email inside it. That is accepted for internal tools over https
-  with a sixty-second token life.
+  user id, email and name inside it. That is accepted for internal tools over
+  https with a sixty-second token life.
 - The platform signs handoff tokens with a **private key only it holds** (2.0.0);
   applications hold the public key, which verifies and cannot sign. An
   application's session secret is its own and signs nothing but its own cookies.
@@ -224,6 +275,16 @@ should say so out loud rather than quietly adding a call back.
 - Nothing secret lives in this repository. The security is in the platform's
   private key and each application's own secret, held by each deployment and
   never appearing here. The public key is configuration, not a secret.
+
+## Tests
+
+```
+npm test
+```
+
+Hermetic: no network, no secrets, no application. The module had no tests of
+its own until 2.1.0; every application tests the installed copy against its own
+use, which proves the pairing and not the module. These prove the module alone.
 
 ## Versioning
 
