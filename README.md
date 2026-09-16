@@ -231,6 +231,17 @@ Tagged, and applications name the exact version they run. Upgrading is a
 deliberate commit in each application rather than something that happens
 underneath it.
 
+## Who changes this
+
+The Marketing Hub session (the owner's decision, 2026-09-16). This module is
+part of the shared layer between the Hub and the tools, and that layer's home is
+the Hub: what the handoff carries is the Hub's to decide, so a change here is
+made from a Marketing Hub session, on a branch and pull request in this
+repository, released as a new tag, and then taken by each application as a
+deliberate commit. An application's own session takes the version and acts on
+what the token carries; it does not change the module. The rule every session
+reads is in `/bb:start`, the shared session toolbox.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
