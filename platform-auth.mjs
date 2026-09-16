@@ -15,7 +15,7 @@
 
 import { createHmac, createPublicKey, randomBytes, timingSafeEqual, verify as verifySignature } from 'node:crypto';
 
-export const CLIENT_VERSION = '2.0.0';
+export const CLIENT_VERSION = '2.1.0';
 
 // --- page permissions (1.2.0) -------------------------------------------------
 //
@@ -63,6 +63,22 @@ export function holds(apps, appId) {
   if (!Array.isArray(apps)) return true;
   return apps.includes(String(appId));
 }
+
+// --- the person's name (2.1.0) --------------------------------------------------
+//
+// The platform holds what a person is CALLED, and until 2.1.0 the token carried
+// only who they are: an id and an address. Every application that wanted a name
+// on a screen made one out of the front of the address, each in its own way, so
+// one person read differently on every tool, and on two screens of the same
+// tool (2026-09-16). Now the name rides in the handoff beside the email, and
+// this module moves it exactly as it moves the email: never read, never shaped.
+// It is sent AS STORED, empty string and all, so an application falls back on
+// its own terms and the platform never guesses twice.
+//
+// THE STABLE KEY IS `id`. The name and the email are what an application SHOWS,
+// and both can change; anything an application records about a person is keyed
+// by the id, and the name is looked up when it is shown. `onSignIn` (below) is
+// where an application keeps its own people list current.
 
 // --- the platform's public key (2.0.0) ------------------------------------------
 //
@@ -130,7 +146,7 @@ function readCookie(req, name) {
   return null;
 }
 
-export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName, sessionHours = SESSION_HOURS } = {}) {
+export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName, sessionHours = SESSION_HOURS, onSignIn = null } = {}) {
   need(appId, 'appId');
   need(cookieName, 'cookieName');
   need(platformUrl, 'platformUrl');
@@ -153,12 +169,15 @@ export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName
   // platform at runtime (see README). Revocation therefore lands when this
   // expires, which is the accepted trade. Signed with THIS application's
   // secret and nothing else's (2.0.0).
-  function issue({ userId, email, pages = null, apps = null, now = Date.now() }) {
+  function issue({ userId, email, name = '', pages = null, apps = null, now = Date.now() }) {
     const claims = {
       u: String(userId), e: String(email || ''), a: appId,
       exp: Math.floor(now / 1000) + sessionHours * 3600,
       n: randomBytes(6).toString('base64url'),
     };
+    // The name (2.1.0), omitted when there is none, so a session from before
+    // names and a nameless account look the same to `read`: both answer ''.
+    if (name) claims.nm = String(name);
     // Omitted rather than sent as null when there is nothing to say, so an
     // absent list stays absent through the whole round trip. See `allows`.
     if (Array.isArray(pages)) claims.p = pages.map(String);
@@ -184,6 +203,9 @@ export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName
       return {
         id: claims.u,
         email: claims.e,
+        // What the platform calls this person (2.1.0), or '' when it holds no
+        // name or the session predates names. Display only; the key is `id`.
+        name: typeof claims.nm === 'string' ? claims.nm : '',
         pages: Array.isArray(claims.p) ? claims.p.map(String) : null,
         // The tools this person holds, or null meaning every tool (1.3.0).
         // `holds` is the only correct way to ask.
@@ -229,7 +251,7 @@ export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName
   // own session, then REDIRECTS TO A CLEAN URL so the token does not sit in
   // browser history or in an access log. An applet that skipped that redirect
   // would undo most of what the sixty-second lifetime is for.
-  function handoff(req, res) {
+  async function handoff(req, res) {
     const token = String(req.query?.token || '');
     // A key-signed token (2.0.0) verifies against the platform's public key; a
     // shared-secret token (pre-2.0.0) against this application's secret, which
@@ -256,8 +278,23 @@ export function platformAuth({ appId, secret, publicKey, platformUrl, cookieName
     // now true of a smaller and more casual action.
     // The tool list rides the same way (1.3.0): read once here, held for the
     // session, never asked for again.
+    //
+    // THE ONE MOMENT AN APPLICATION MAY RECORD WHO ARRIVED (2.1.0). An
+    // application that keeps its own people list, keyed by the platform's id,
+    // fills it here and nowhere else; the module hands the person over and never
+    // sees the list. A fault in that bookkeeping is logged and never stops a
+    // sign-in: this is a gate for tokens, not for ledgers.
+    if (typeof onSignIn === 'function') {
+      try {
+        await onSignIn({
+          id: claims.userId, email: claims.email, name: claims.name, pages: claims.pages, apps: claims.apps,
+        });
+      } catch (err) {
+        console.error('platformAuth: onSignIn failed:', err?.message || err);
+      }
+    }
     res.cookie(cookieName, issue({
-      userId: claims.userId, email: claims.email, pages: claims.pages, apps: claims.apps,
+      userId: claims.userId, email: claims.email, name: claims.name, pages: claims.pages, apps: claims.apps,
     }), {
       ...cookieOptions(req), maxAge: sessionHours * 3600 * 1000,
     });
@@ -319,6 +356,9 @@ export function verifyHandoff(token, expectedApp, keys, { now = Date.now() } = {
     return {
       userId: claims.u,
       email: claims.e,
+      // What the platform calls this person (2.1.0); '' when it holds no name
+      // or the token predates names. Never derived here from the address.
+      name: typeof claims.nm === 'string' ? claims.nm : '',
       appId: claims.a,
       // null when the token says nothing about pages, which means every page.
       // An empty array is the different, real answer of "no pages at all".
