@@ -276,6 +276,16 @@ should say so out loud rather than quietly adding a call back.
   private key and each application's own secret, held by each deployment and
   never appearing here. The public key is configuration, not a secret.
 
+## Tests
+
+```
+npm test
+```
+
+Hermetic: no network, no secrets, no application. The module had no tests of
+its own until 2.1.0; every application tests the installed copy against its own
+use, which proves the pairing and not the module. These prove the module alone.
+
 ## Versioning
 
 Tagged, and applications name the exact version they run. Upgrading is a
